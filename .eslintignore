@@ -1,0 +1,5 @@
+node_modules/
+coverage/
+dist/
+# Frontend has its own ESLint config (apps/web/.eslintrc.cjs) with the React plugins.
+apps/web/

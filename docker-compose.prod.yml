@@ -1,0 +1,54 @@
+# Example production compose. Not intended to run as-is: point at real MySQL
+# and Redis (managed services in most environments), and inject secrets via a
+# secrets store or an --env-file. This is a reference topology.
+
+services:
+  api:
+    image: pulseguard:latest
+    build: .
+    restart: always
+    env_file: .env.prod
+    ports:
+      - '3000:3000'
+    depends_on:
+      - mysql
+      - redis
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3000/api/v1/health/ready']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  worker:
+    image: pulseguard:latest
+    restart: always
+    env_file: .env.prod
+    # Same image, different command; enable queue + scheduler + notifications.
+    command: ['node', 'apps/worker/src/worker.js']
+    environment:
+      QUEUE_ENABLED: 'true'
+      SCHEDULER_ENABLED: 'true'
+      NOTIFICATIONS_ENABLED: 'true'
+    depends_on:
+      - mysql
+      - redis
+
+  mysql:
+    image: mysql:8.0
+    restart: always
+    env_file: .env.prod
+    environment:
+      MYSQL_DATABASE: ${DB_NAME:-pulseguard_db}
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - pulseguard_prod_mysql:/var/lib/mysql
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    volumes:
+      - pulseguard_prod_redis:/data
+
+volumes:
+  pulseguard_prod_mysql:
+  pulseguard_prod_redis:

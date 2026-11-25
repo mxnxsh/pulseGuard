@@ -1,0 +1,138 @@
+# Backend deploy — build + push image, run migrations, then deploy API + worker.
+#
+# This is intentionally a TEMPLATE. The marked `# CUSTOMIZE:` steps are the ones
+# that depend on your target (ECS, Kubernetes, Fly.io, Render, bare Docker,
+# etc.). Replace them with the native commands for your platform and the deploy
+# behavior you want (rolling, blue/green, canary). The surrounding sequencing
+# — build → push → migrate → deploy worker → deploy API → verify — is the
+# correctness contract the plan calls for and should stay in this order.
+#
+# Required secrets (GitHub Secrets, environment-scoped):
+#   REGISTRY_URL              e.g. ghcr.io / docker.io / your-registry.example.com
+#   REGISTRY_USERNAME
+#   REGISTRY_PASSWORD         Use a token/robot account, not a personal password.
+#   PROD_DB_HOST / PROD_DB_PORT / PROD_DB_USER / PROD_DB_PASSWORD / PROD_DB_NAME
+#   PROD_DEPLOY_HOOK          (optional) URL or token your platform requires.
+
+name: Backend Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref (tag, branch, or SHA) to deploy'
+        required: true
+        default: 'main'
+  push:
+    tags: ['v*']
+
+concurrency:
+  group: backend-deploy
+  cancel-in-progress: false # never cancel an in-flight deploy
+
+jobs:
+  build-and-push:
+    name: Build + push image
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Compute image tag
+        id: meta
+        run: |
+          SHA_SHORT="${GITHUB_SHA::12}"
+          IMAGE="${{ secrets.REGISTRY_URL }}/pulseguard-api:${SHA_SHORT}"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.REGISTRY_URL }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Build + push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.image }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  migrate:
+    name: Apply database migrations
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --omit=dev --no-audit --no-fund
+
+      # IMPORTANT: run migrations BEFORE deploying new API/worker code. The
+      # worker tolerates both old and new schema (see docs/OPERATIONS.md §3).
+      - name: Migrate
+        env:
+          NODE_ENV: production
+          DB_HOST: ${{ secrets.PROD_DB_HOST }}
+          DB_PORT: ${{ secrets.PROD_DB_PORT }}
+          DB_USER: ${{ secrets.PROD_DB_USER }}
+          DB_PASSWORD: ${{ secrets.PROD_DB_PASSWORD }}
+          DB_NAME: ${{ secrets.PROD_DB_NAME }}
+          # Env validation requires a strong JWT secret in prod; migrations don't
+          # read it but the config module validates at load.
+          JWT_SECRET: ${{ secrets.PROD_JWT_SECRET }}
+        run: npm run db:migrate
+
+  deploy:
+    name: Deploy API + worker
+    needs: [build-and-push, migrate]
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Image to deploy
+        run: echo "Deploying ${{ needs.build-and-push.outputs.image }}"
+
+      # ---------------------------------------------------------------------
+      # CUSTOMIZE: replace the two blocks below with your platform's deploy
+      # command. The *order* matters: deploy worker(s) first so no job sits
+      # queued without a consumer, then roll the API.
+      # ---------------------------------------------------------------------
+
+      - name: Deploy worker
+        run: |
+          echo "TODO: call your worker deploy command here, pinning the image to"
+          echo "  ${{ needs.build-and-push.outputs.image }}"
+          echo "and passing QUEUE_ENABLED=true SCHEDULER_ENABLED=true NOTIFICATIONS_ENABLED=true"
+
+      - name: Deploy API
+        run: |
+          echo "TODO: call your API deploy command here, pinning the image to"
+          echo "  ${{ needs.build-and-push.outputs.image }}"
+
+      # ---------------------------------------------------------------------
+      # Post-deploy verification. If any of these fail, follow the rollback
+      # section in docs/OPERATIONS.md §5.
+      # ---------------------------------------------------------------------
+
+      - name: Verify readiness
+        run: |
+          echo "TODO: curl https://api.<your-domain>/api/v1/health/ready"
+          echo "Expect HTTP 200 and checks.database == 'ok' (and checks.redis when queue is enabled)."

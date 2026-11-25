@@ -1,0 +1,520 @@
+openapi: 3.0.3
+info:
+  title: PulseGuard API
+  description: |
+    API monitoring and incident-management SaaS. All routes are prefixed with
+    `/api/v1`. Auth uses JWT access tokens plus rotating refresh tokens.
+    Tenancy is enforced at the query boundary; cross-org access resolves to 404.
+  version: 1.0.0
+servers:
+  - url: /api/v1
+    description: Versioned API root.
+
+tags:
+  - name: Auth
+  - name: Users
+  - name: Organizations
+  - name: Projects
+  - name: Monitors
+  - name: Metrics
+  - name: Incidents
+  - name: NotificationChannels
+  - name: Health
+
+paths:
+  /health/live:
+    get:
+      tags: [Health]
+      summary: Liveness probe (unauthenticated).
+      responses:
+        '200':
+          description: Process is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+
+  /health/ready:
+    get:
+      tags: [Health]
+      summary: Readiness probe (unauthenticated).
+      responses:
+        '200':
+          description: Ready to serve traffic.
+        '503':
+          description: A dependency (DB / Redis when queue is enabled) is unavailable.
+
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a new user (also creates a default organization + owner membership).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201': { $ref: '#/components/responses/TokenPair' }
+        '400': { description: Validation failed or email already taken. }
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in with email and password.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200': { $ref: '#/components/responses/TokenPair' }
+        '401': { description: Invalid credentials. }
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Rotate a refresh token. Reuse revokes the entire token family.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refreshToken: { type: string }
+              required: [refreshToken]
+      responses:
+        '200':
+          description: New token pair.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken: { type: string }
+                  refreshToken: { type: string }
+        '401': { description: Invalid, expired, or revoked refresh token. }
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Revoke the presented refresh token's entire family.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refreshToken: { type: string }
+              required: [refreshToken]
+      responses:
+        '204': { description: Logged out. }
+
+  /users/me:
+    get:
+      tags: [Users]
+      summary: Get the authenticated user's profile.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Profile.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: '#/components/schemas/User' }
+        '401': { description: Unauthenticated. }
+
+  /organizations:
+    get:
+      tags: [Organizations]
+      summary: List organizations the caller is a member of.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Paginated organizations.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginationEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Organization' }
+    post:
+      tags: [Organizations]
+      summary: Create a new organization (caller becomes owner).
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+              required: [name]
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  organization: { $ref: '#/components/schemas/Organization' }
+
+  /organizations/{orgId}:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+    get:
+      tags: [Organizations]
+      summary: Get one organization (members only; 404 for non-members).
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Organization. }
+        '404': { description: Not found or caller is not a member. }
+    patch:
+      tags: [Organizations]
+      summary: Update an organization (admin+).
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+      responses:
+        '200': { description: Updated. }
+        '403': { description: Insufficient permissions. }
+
+  /organizations/{orgId}/projects:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+    get:
+      tags: [Projects]
+      summary: List projects in an organization.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200': { description: Paginated projects. }
+    post:
+      tags: [Projects]
+      summary: Create a project (engineer+).
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                environment: { type: string }
+              required: [name, environment]
+      responses:
+        '201': { description: Created. }
+        '400': { description: PROJECT_EXISTS or validation error. }
+
+  /organizations/{orgId}/projects/{projectId}/monitors:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      tags: [Monitors]
+      summary: List monitors in a project.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: status
+          in: query
+          schema: { type: string, enum: [active, paused, disabled] }
+      responses:
+        '200': { description: Paginated monitors. }
+    post:
+      tags: [Monitors]
+      summary: Create a monitor (engineer+). Target URL is validated for SSRF safety.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateMonitorRequest'
+      responses:
+        '201': { description: Created. }
+        '400':
+          description: UNSAFE_TARGET, MONITOR_QUOTA_EXCEEDED, or VALIDATION_ERROR.
+
+  /organizations/{orgId}/projects/{projectId}/monitors/{monitorId}:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/MonitorId'
+    get:
+      tags: [Monitors]
+      summary: Get one monitor.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Monitor. }
+    patch:
+      tags: [Monitors]
+      summary: Update a monitor (engineer+). URL changes revalidate SSRF.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Updated. }
+    delete:
+      tags: [Monitors]
+      summary: Delete a monitor (engineer+).
+      security: [{ bearerAuth: [] }]
+      responses:
+        '204': { description: Deleted. }
+
+  /organizations/{orgId}/projects/{projectId}/monitors/{monitorId}/pause:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/MonitorId'
+    post:
+      tags: [Monitors]
+      summary: Pause a monitor (engineer+); clears scheduling.
+      security: [{ bearerAuth: [] }]
+      responses: { '200': { description: Paused. } }
+
+  /organizations/{orgId}/projects/{projectId}/monitors/{monitorId}/resume:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/MonitorId'
+    post:
+      tags: [Monitors]
+      summary: Resume a monitor (engineer+); re-arms scheduling.
+      security: [{ bearerAuth: [] }]
+      responses: { '200': { description: Resumed. } }
+
+  /organizations/{orgId}/projects/{projectId}/monitors/{monitorId}/run:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/MonitorId'
+    post:
+      tags: [Monitors]
+      summary: Enqueue an on-demand check (engineer+).
+      security: [{ bearerAuth: [] }]
+      responses:
+        '202': { description: Enqueued. }
+        '200': { description: Queue disabled; no-op. }
+
+  /organizations/{orgId}/projects/{projectId}/monitors/{monitorId}/checks:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/MonitorId'
+    get:
+      tags: [Metrics]
+      summary: Paginated check history.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: status
+          in: query
+          schema: { type: string, enum: [success, failure, timeout, blocked] }
+      responses: { '200': { description: Paginated results. } }
+
+  /organizations/{orgId}/projects/{projectId}/monitors/{monitorId}/summary:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/MonitorId'
+    get:
+      tags: [Metrics]
+      summary: Uptime + latency summary over a fixed window.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: window
+          in: query
+          required: true
+          schema: { type: string, enum: [1h, 24h, 7d, 30d] }
+      responses:
+        '200':
+          description: |
+            `uptimePercent` is `null` when the window has no data. Latency stats
+            are computed over successful checks only.
+
+  /organizations/{orgId}/incidents:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+    get:
+      tags: [Incidents]
+      summary: List incidents in the organization.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: status
+          in: query
+          schema: { type: string, enum: [open, acknowledged, investigating, resolved] }
+        - name: monitorId
+          in: query
+          schema: { type: string }
+        - name: projectId
+          in: query
+          schema: { type: string }
+      responses: { '200': { description: Paginated incidents. } }
+
+  /organizations/{orgId}/incidents/{incidentId}:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+      - name: incidentId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Incidents]
+      summary: Incident detail with timeline.
+      security: [{ bearerAuth: [] }]
+      responses: { '200': { description: Incident with events. } }
+
+  /organizations/{orgId}/notification-channels:
+    parameters:
+      - $ref: '#/components/parameters/OrgId'
+    get:
+      tags: [NotificationChannels]
+      summary: List notification channels. Recipient email is redacted in responses.
+      security: [{ bearerAuth: [] }]
+      responses: { '200': { description: Paginated channels. } }
+    post:
+      tags: [NotificationChannels]
+      summary: Create a channel (admin+).
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                config:
+                  type: object
+                  properties:
+                    to: { type: string, format: email }
+                  required: [to]
+                enabled: { type: boolean }
+              required: [name, config]
+      responses: { '201': { description: Created. } }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    PageSize:
+      name: pageSize
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    OrgId:
+      name: orgId
+      in: path
+      required: true
+      schema: { type: string, description: 'Organization public_id (ULID-shaped, 26 chars).' }
+    ProjectId:
+      name: projectId
+      in: path
+      required: true
+      schema: { type: string }
+    MonitorId:
+      name: monitorId
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    TokenPair:
+      description: A user and its issued access + refresh tokens.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              user: { $ref: '#/components/schemas/User' }
+              accessToken: { type: string }
+              refreshToken: { type: string }
+  schemas:
+    User:
+      type: object
+      properties:
+        id: { type: string }
+        email: { type: string, format: email }
+        fullName: { type: string }
+        status: { type: string }
+        createdAt: { type: string, format: date-time }
+    Organization:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        slug: { type: string }
+        status: { type: string }
+        role: { type: string, enum: [viewer, engineer, admin, owner] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    RegisterRequest:
+      type: object
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, minLength: 8 }
+        fullName: { type: string }
+        organizationName: { type: string }
+      required: [email, password, fullName]
+    LoginRequest:
+      type: object
+      properties:
+        email: { type: string, format: email }
+        password: { type: string }
+      required: [email, password]
+    CreateMonitorRequest:
+      type: object
+      properties:
+        name: { type: string }
+        url: { type: string, format: uri }
+        method: { type: string, enum: [GET, HEAD, POST] }
+        intervalSeconds: { type: integer, minimum: 30, maximum: 86400 }
+        timeoutMs: { type: integer, minimum: 1000, maximum: 60000 }
+        expectedStatusMin: { type: integer, minimum: 100, maximum: 599 }
+        expectedStatusMax: { type: integer, minimum: 100, maximum: 599 }
+        requestHeaders:
+          type: object
+          additionalProperties: { type: string }
+      required: [name, url]
+    PaginationEnvelope:
+      type: object
+      properties:
+        pagination:
+          type: object
+          properties:
+            page: { type: integer }
+            pageSize: { type: integer }
+            total: { type: integer }
+            totalPages: { type: integer }

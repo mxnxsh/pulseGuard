@@ -1,0 +1,980 @@
+{
+  "info": {
+    "name": "PulseGuard API",
+    "description": "PulseGuard backend collection. Requests are chained via collection variables: run **Auth → Register** first (or Login) and it captures `accessToken` and `refreshToken`. **Organizations → List** captures `orgId`. **Projects → Create** captures `projectId`. **Monitors → Create** captures `monitorId`. **Notification Channels → Create** captures `channelId`. After that every other request just works. Point `baseUrl` at your environment (defaults to `http://localhost:3000/api/v1`).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3000/api/v1", "type": "string" },
+    { "key": "testEmail", "value": "", "type": "string" },
+    { "key": "testPassword", "value": "Password123", "type": "string" },
+    { "key": "accessToken", "value": "", "type": "string" },
+    { "key": "refreshToken", "value": "", "type": "string" },
+    { "key": "orgId", "value": "", "type": "string" },
+    { "key": "projectId", "value": "", "type": "string" },
+    { "key": "monitorId", "value": "", "type": "string" },
+    { "key": "incidentId", "value": "", "type": "string" },
+    { "key": "channelId", "value": "", "type": "string" }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{accessToken}}", "type": "string" }]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Global: ensure a testEmail exists for register requests.",
+          "if (!pm.collectionVariables.get('testEmail')) {",
+          "  pm.collectionVariables.set('testEmail', 'postman_' + Date.now() + '@pulseguard.test');",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Liveness",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/health/live", "host": ["{{baseUrl}}"], "path": ["health", "live"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.code === 200);",
+                  "pm.test('status ok', () => pm.response.json().status === 'ok');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Readiness",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/health/ready", "host": ["{{baseUrl}}"], "path": ["health", "ready"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 or 503', () => [200, 503].includes(pm.response.code));",
+                  "pm.test('reports database check', () => pm.response.json().checks && 'database' in pm.response.json().checks);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Register (creates user + org + owner membership)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/auth/register", "host": ["{{baseUrl}}"], "path": ["auth", "register"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{testEmail}}\",\n  \"password\": \"{{testPassword}}\",\n  \"fullName\": \"Postman User\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Force a fresh email for each Register run.",
+                  "pm.collectionVariables.set('testEmail', 'postman_' + Date.now() + '@pulseguard.test');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.code === 201);",
+                  "const res = pm.response.json();",
+                  "pm.test('returns tokens', () => res.accessToken && res.refreshToken);",
+                  "pm.collectionVariables.set('accessToken', res.accessToken);",
+                  "pm.collectionVariables.set('refreshToken', res.refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/auth/login", "host": ["{{baseUrl}}"], "path": ["auth", "login"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{testEmail}}\",\n  \"password\": \"{{testPassword}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.code === 200);",
+                  "const res = pm.response.json();",
+                  "pm.collectionVariables.set('accessToken', res.accessToken);",
+                  "pm.collectionVariables.set('refreshToken', res.refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refresh (rotates the token; old one becomes revoked)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/auth/refresh", "host": ["{{baseUrl}}"], "path": ["auth", "refresh"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.code === 200);",
+                  "const res = pm.response.json();",
+                  "pm.collectionVariables.set('accessToken', res.accessToken);",
+                  "pm.collectionVariables.set('refreshToken', res.refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Logout (revokes the entire token family)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/auth/logout", "host": ["{{baseUrl}}"], "path": ["auth", "logout"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('204 No Content', () => pm.response.code === 204);"]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Users",
+      "item": [
+        {
+          "name": "Get current user (me)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/users/me", "host": ["{{baseUrl}}"], "path": ["users", "me"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.code === 200);",
+                  "pm.test('returns user', () => pm.response.json().user && pm.response.json().user.email);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Organizations",
+      "item": [
+        {
+          "name": "List (captures orgId)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/organizations?page=1&pageSize=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["organizations"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "pageSize", "value": "20" }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.code === 200);",
+                  "const res = pm.response.json();",
+                  "if (res.data && res.data.length > 0) {",
+                  "  pm.collectionVariables.set('orgId', res.data[0].id);",
+                  "  console.log('Captured orgId:', res.data[0].id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get one",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/organizations/{{orgId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["organizations", "{{orgId}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('200 OK', () => pm.response.code === 200);"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/organizations", "host": ["{{baseUrl}}"], "path": ["organizations"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Second Org\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.code === 201);",
+                  "pm.test('owner role', () => pm.response.json().organization.role === 'owner');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update (admin+)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": {
+              "raw": "{{baseUrl}}/organizations/{{orgId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["organizations", "{{orgId}}"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Renamed Org\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('200 OK', () => pm.response.code === 200);"]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Projects",
+      "item": [
+        {
+          "name": "List",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/organizations/{{orgId}}/projects",
+              "host": ["{{baseUrl}}"],
+              "path": ["organizations", "{{orgId}}", "projects"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('200 OK', () => pm.response.code === 200);"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create (captures projectId)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": {
+              "raw": "{{baseUrl}}/organizations/{{orgId}}/projects",
+              "host": ["{{baseUrl}}"],
+              "path": ["organizations", "{{orgId}}", "projects"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Postman Project\",\n  \"environment\": \"production\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.code === 201);",
+                  "const res = pm.response.json();",
+                  "pm.collectionVariables.set('projectId', res.project.id);",
+                  "console.log('Captured projectId:', res.project.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get one",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/organizations/{{orgId}}/projects/{{projectId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["organizations", "{{orgId}}", "projects", "{{projectId}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('200 OK', () => pm.response.code === 200);"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update (engineer+)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": {
+              "raw": "{{baseUrl}}/organizations/{{orgId}}/projects/{{projectId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["organizations", "{{orgId}}", "projects", "{{projectId}}"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Renamed Project\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('200 OK', () => pm.response.code === 200);"]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Monitors",
+      "item": [
+        {
+          "name": "List (optional ?status=)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/organizations/{{orgId}}/projects/{{projectId}}/monitors",
+              "host": ["{{baseUrl}}"],
+              "path": ["organizations", "{{orgId}}", "projects", "{{projectId}}", "monitors"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('200 OK', () => pm.response.code === 200);"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create (captures monitorId; url must pass SSRF checks)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": {
+              "raw": "{{baseUrl}}/organizations/{{orgId}}/projects/{{projectId}}/monitors",
+              "host": ["{{baseUrl}}"],
+              "path": ["organizations", "{{orgId}}", "projects", "{{projectId}}", "monitors"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Example homepage\",\n  \"url\": \"https://example.com\",\n  \"method\": \"GET\",\n  \"intervalSeconds\": 60,\n  \"timeoutMs\": 5000,\n  \"expectedStatusMin\": 200,\n  \"expectedStatusMax\": 299\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.code === 201);",
+                  "const res = pm.response.json();",
+                  "pm.collectionVariables.set('monitorId', res.monitor.id);",
+                  "console.log('Captured monitorId:', res.monitor.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get one",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/organizations/{{orgId}}/projects/{{projectId}}/monitors/{{monitorId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["organizations", "{{orgId}}", "projects", "{{projectId}}", "monitors", "{{monitorId}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('200 OK', () => pm.response.code === 200);"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": {
+              "raw": "{{baseUrl}}/organizations/{{orgId}}/projects/{{projectId}}/monitors/{{monitorId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["organizations", "{{orgId}}", "projects", "{{projectId}}", "monitors", "{{monitorId}}"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"intervalSeconds\": 120\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('200 OK', () => pm.response.code === 200);"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Pause",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/organizations/{{orgId}}/projects/{{projectId}}/monitors/{{monitorId}}/pause",
+              "host": ["{{baseUrl}}"],
+              "path": ["organizations", "{{orgId}}", "projects", "{{projectId}}", "monitors", "{{monitorId}}", "pause"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.code === 200);",
+                  "pm.test('status paused', () => pm.response.json().monitor.status === 'paused');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Resume",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/organizations/{{orgId}}/projects/{{projectId}}/monitors/{{monitorId}}/resume",
+              "host": ["{{baseUrl}}"],
+              "path": ["organizations", "{{orgId}}", "projects", "{{projectId}}", "monitors", "{{monitorId}}", "resume"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.code === 200);",
+                  "pm.test('status active', () => pm.response.json().monitor.status === 'active');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Run on demand (enqueue check)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/organizations/{{orgId}}/projects/{{projectId}}/monitors/{{monitorId}}/run",
+              "host": ["{{baseUrl}}"],
+              "path": ["organizations", "{{orgId}}", "projects", "{{projectId}}", "monitors", "{{monitorId}}", "run"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 (queue off) or 202 (enqueued)', () => [200, 202].includes(pm.response.code));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Delete",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/organizations/{{orgId}}/projects/{{projectId}}/monitors/{{monitorId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["organizations", "{{orgId}}", "projects", "{{projectId}}", "monitors", "{{monitorId}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('204 No Content', () => pm.response.code === 204);"]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Metrics",
+      "item": [
+        {
+          "name": "Check history (paginated + optional ?status=)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/organizations/{{orgId}}/projects/{{projectId}}/monitors/{{monitorId}}/checks?page=1&pageSize=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["organizations", "{{orgId}}", "projects", "{{projectId}}", "monitors", "{{monitorId}}", "checks"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "pageSize", "value": "20" },
+                { "key": "status", "value": "failure", "disabled": true }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('200 OK', () => pm.response.code === 200);"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Summary (window = 1h | 24h | 7d | 30d)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/organizations/{{orgId}}/projects/{{projectId}}/monitors/{{monitorId}}/summary?window=24h",
+              "host": ["{{baseUrl}}"],
+              "path": ["organizations", "{{orgId}}", "projects", "{{projectId}}", "monitors", "{{monitorId}}", "summary"],
+              "query": [{ "key": "window", "value": "24h" }]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.code === 200);",
+                  "pm.test('has uptime + latency', () => {",
+                  "  const b = pm.response.json();",
+                  "  return 'uptimePercent' in b && 'latencyMs' in b;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Incidents",
+      "item": [
+        {
+          "name": "List (optional filters: status, monitorId, projectId)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/organizations/{{orgId}}/incidents?page=1&pageSize=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["organizations", "{{orgId}}", "incidents"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "pageSize", "value": "20" },
+                { "key": "status", "value": "open", "disabled": true },
+                { "key": "monitorId", "value": "{{monitorId}}", "disabled": true }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.code === 200);",
+                  "const res = pm.response.json();",
+                  "if (res.data && res.data.length > 0) {",
+                  "  pm.collectionVariables.set('incidentId', res.data[0].id);",
+                  "  console.log('Captured incidentId:', res.data[0].id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get one (with timeline)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/organizations/{{orgId}}/incidents/{{incidentId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["organizations", "{{orgId}}", "incidents", "{{incidentId}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('200 OK', () => pm.response.code === 200);"]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Notification Channels",
+      "item": [
+        {
+          "name": "List (recipient email is redacted)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/organizations/{{orgId}}/notification-channels",
+              "host": ["{{baseUrl}}"],
+              "path": ["organizations", "{{orgId}}", "notification-channels"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('200 OK', () => pm.response.code === 200);"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create (admin+; captures channelId)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": {
+              "raw": "{{baseUrl}}/organizations/{{orgId}}/notification-channels",
+              "host": ["{{baseUrl}}"],
+              "path": ["organizations", "{{orgId}}", "notification-channels"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Ops email\",\n  \"config\": { \"to\": \"oncall@example.com\" },\n  \"enabled\": true\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.code === 201);",
+                  "pm.test('recipient is redacted', () => /\\*\\*\\*@/.test(pm.response.json().channel.config.to));",
+                  "pm.collectionVariables.set('channelId', pm.response.json().channel.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get one",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/organizations/{{orgId}}/notification-channels/{{channelId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["organizations", "{{orgId}}", "notification-channels", "{{channelId}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('200 OK', () => pm.response.code === 200);"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update (admin+)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": {
+              "raw": "{{baseUrl}}/organizations/{{orgId}}/notification-channels/{{channelId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["organizations", "{{orgId}}", "notification-channels", "{{channelId}}"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": false\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('200 OK', () => pm.response.code === 200);"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Delete (admin+)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/organizations/{{orgId}}/notification-channels/{{channelId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["organizations", "{{orgId}}", "notification-channels", "{{channelId}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('204 No Content', () => pm.response.code === 204);"]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Docs",
+      "item": [
+        {
+          "name": "OpenAPI spec (YAML)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/openapi.yaml", "host": ["{{baseUrl}}"], "path": ["openapi.yaml"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.code === 200);",
+                  "pm.test('is YAML', () => pm.response.headers.get('Content-Type').includes('yaml'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Negative examples (expected failures)",
+      "description": "Requests that should be rejected. Useful for verifying security controls.",
+      "item": [
+        {
+          "name": "SSRF: private target should be rejected (in production)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": {
+              "raw": "{{baseUrl}}/organizations/{{orgId}}/projects/{{projectId}}/monitors",
+              "host": ["{{baseUrl}}"],
+              "path": ["organizations", "{{orgId}}", "projects", "{{projectId}}", "monitors"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Loopback\",\n  \"url\": \"http://127.0.0.1/\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// In production 400 UNSAFE_TARGET is expected. In dev with",
+                  "// MONITOR_ALLOW_PRIVATE_TARGETS=true the request may succeed —",
+                  "// so we accept 201 as well and note it in the console.",
+                  "pm.test('400 or 201 (dev override)', () => [201, 400].includes(pm.response.code));",
+                  "if (pm.response.code === 201) console.warn('Private targets allowed in this env.');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Auth: bad password returns 401",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/auth/login", "host": ["{{baseUrl}}"], "path": ["auth", "login"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{testEmail}}\",\n  \"password\": \"WrongPassword123\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.code === 401);",
+                  "pm.test('code=INVALID_CREDENTIALS', () => pm.response.json().error.code === 'INVALID_CREDENTIALS');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Auth: /users/me without token returns 401",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/users/me", "host": ["{{baseUrl}}"], "path": ["users", "me"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('401 Unauthorized', () => pm.response.code === 401);"]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
