@@ -17,6 +17,7 @@
     "db:reset": "node database/migrate.js reset",
     "db:status": "node database/migrate.js status",
     "db:seed": "node database/seed.js",
+    "db:seed:demo": "node database/seed-demo.js",
     "maintenance:prune": "node scripts/prune.js",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",

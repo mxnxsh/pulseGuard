@@ -1,0 +1,4 @@
+Email,Password,Full Name,Organization,Role,Notes
+alice@demo.pulseguard.test,Password123,Alice Chen,Acme Corp,owner,Full admin of Acme. Can edit everything including notification channels.
+charlie@demo.pulseguard.test,Password123,Charlie Patel,Acme Corp,engineer,Member of Acme. Can manage monitors and projects but NOT notification channels (admin+ only). Use this account to test role gates.
+bob@demo.pulseguard.test,Password123,Bob Martinez,Globex Monitoring,owner,Full admin of Globex. Completely separate tenant from Acme — great for verifying cross-org isolation (404s).
